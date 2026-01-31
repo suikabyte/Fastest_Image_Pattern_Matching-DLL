@@ -1,0 +1,228 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      include_dependencies:
+        description: 'Include OpenCV runtime dependencies?'
+        required: true
+        default: false
+        type: boolean
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - Release
+          - Debug
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ========================================================
+  # Linux Build
+  # ========================================================
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Version String
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="manual-$(git rev-parse --short HEAD)"
+          fi
+          echo "Current Version: $VERSION"
+          echo "VERSION_TAG=$VERSION" >> $GITHUB_ENV
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopencv-dev build-essential cmake
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ inputs.build_type || 'Release' }}
+
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Package Output
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ -d "build/lib" ]; then
+            echo "Found build/lib, copying C++ artifacts..."
+            cp build/lib/*.so dist/
+          else
+            echo "Error: build/lib directory not found!"
+            exit 1
+          fi
+          
+          SHOULD_BUNDLE="${{ inputs.include_dependencies }}"
+          IS_TAG="${{ startsWith(github.ref, 'refs/tags/') }}"
+          
+          if [[ "$SHOULD_BUNDLE" == "true" || "$IS_TAG" == "true" ]]; then
+             echo "📦 Bundling OpenCV dependencies..."
+             ldd build/lib/*.so | grep "libopencv" | awk '{print $3}' | sort | uniq | while read -r lib; do
+               if [ -f "$lib" ]; then
+                 echo "  -> Copying $lib"
+                 cp "$lib" dist/
+               fi
+             done
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TemplateMatcher-Linux-${{ env.VERSION_TAG }}
+          path: dist/
+          retention-days: 3
+
+  # ========================================================
+  # Windows Build
+  # ========================================================
+  build-windows:
+    runs-on: windows-latest
+    env:
+      OPENCV_VER: "4.12.0" 
+      BUILD_TYPE: ${{ inputs.build_type || 'Release' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Version String
+        shell: pwsh
+        run: |
+          $Ref = "${{ github.ref }}"
+          if ($Ref -like "refs/tags/*") {
+            $Version = $Ref.Substring(10)
+          } else {
+            $Sha = git rev-parse --short HEAD
+            $Version = "manual-$Sha"
+          }
+          Write-Host "Current Version: $Version"
+          Add-Content -Path $env:GITHUB_ENV -Value "VERSION_TAG=$Version"
+
+      - name: Cache OpenCV
+        id: cache-opencv
+        uses: actions/cache@v4
+        with:
+          path: C:\opencv
+          key: ${{ runner.os }}-opencv-${{ env.OPENCV_VER }}
+
+      - name: Install OpenCV
+        if: steps.cache-opencv.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $Url = "https://github.com/opencv/opencv/releases/download/$env:OPENCV_VER/opencv-$env:OPENCV_VER-windows.exe"
+          Invoke-WebRequest -Uri $Url -OutFile opencv-installer.exe
+          7z x opencv-installer.exe -oC:\ -y
+          Remove-Item opencv-installer.exe
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          $OpenCVDir = "C:\opencv\build"
+          cmake -B build -S . -DOpenCV_DIR="$OpenCVDir"
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel 4
+
+      - name: Package Output
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          $ConfigDir = "${{ env.BUILD_TYPE }}"
+          
+          $PossiblePaths = @(
+            "build\bin\$ConfigDir",
+            "build\bin",
+            "build\$ConfigDir"
+          )
+          
+          $SourceDir = $null
+          foreach ($p in $PossiblePaths) {
+            if (Test-Path $p) {
+               $SourceDir = $p
+               break
+            }
+          }
+          
+          if (-not $SourceDir) {
+            Write-Error "Could not find artifacts!"
+            exit 1
+          }
+          
+          Write-Host "Copying C++ artifacts from: $SourceDir"
+          Get-ChildItem -Path $SourceDir -Include *.dll,*.exe -Recurse | Copy-Item -Destination dist\
+
+          $Params = "${{ inputs.include_dependencies }}"
+          $IsTag = "${{ startsWith(github.ref, 'refs/tags/') }}"
+
+          if ($Params -eq "true" -or $IsTag -eq "true") {
+              Write-Host "📦 Bundling OpenCV Dependencies..."
+              $OpenCVBase = "C:\opencv\build\x64"
+              if (Test-Path $OpenCVBase) {
+                  $VCDir = Get-ChildItem -Path $OpenCVBase -Directory | Sort-Object Name -Descending | Select-Object -First 1
+                  if ($VCDir) {
+                      $BinDir = Join-Path $VCDir.FullName "bin"
+                      Get-ChildItem -Path $BinDir -Filter "opencv_*.dll" | Copy-Item -Destination dist\
+                  }
+              }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TemplateMatcher-Windows-${{ env.VERSION_TAG }}
+          path: dist/
+          retention-days: 3
+
+  # ========================================================
+  # Release
+  # ========================================================
+  create-release:
+    needs: [build-linux, build-windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Zip Files
+        run: |
+          cd artifacts
+          
+          for dir in */; do
+            dirname=${dir%/}
+            echo "Zipping $dirname..."
+            
+            cd "$dirname"
+            zip -r "../../$dirname.zip" .
+            cd ..
+          done
+          
+          echo "Created archives:"
+          ls -l ..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.zip"
+          generate_release_notes: true
