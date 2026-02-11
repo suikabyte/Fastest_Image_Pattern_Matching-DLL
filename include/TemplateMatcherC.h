@@ -48,6 +48,14 @@ typedef struct {
     double tolerance4;
 } TM_MatchConfig;
 
+// 序列化类型
+typedef enum {
+  TM_FMT_BINARY          = 0,
+  TM_FMT_BINARY_PORTABLE = 1,
+  TM_FMT_JSON            = 2,
+  TM_FMT_XML             = 3
+} TM_Format;
+
 // 创建匹配器
 TM_API TM_MatcherHandle TM_CreateMatcher();
 
@@ -60,6 +68,20 @@ TM_API int TM_LearnPatternFromFile(TM_MatcherHandle handle, const char* filepath
 // 学习模板（从内存数据，BGR格式，width x height）
 TM_API int TM_LearnPatternFromData(TM_MatcherHandle handle, const unsigned char* data, 
                                    int width, int height, int channels);
+
+// 写入模板到文件
+TM_API int TM_WritePatternToFile(TM_MatcherHandle handle, const char* filepath, TM_Format format);
+
+// 从文件读取模板
+TM_API int TM_ReadPatternFromFile(TM_MatcherHandle handle, const char* filepath, TM_Format format);
+
+// 写入模板到内存
+TM_API int TM_WritePatternToData(TM_MatcherHandle handle, unsigned char* data,
+                                 int dataSize, int* writeSize, TM_Format format);
+
+// 从内存读取模板
+TM_API int TM_ReadPatternFromData(TM_MatcherHandle handle, const unsigned char* data,
+                                  int size, TM_Format format);
 
 // 执行匹配（从文件路径）
 TM_API int TM_MatchFromFile(TM_MatcherHandle handle, const char* sourceFile, 

@@ -1,7 +1,10 @@
 #include "TemplateMatcherC.h"
 #include "TemplateMatcher.h"
+#include "CerealSerialization.hpp"
+
 #include <opencv2/opencv.hpp>
 #include <cstring>
+#include <filesystem>
 
 using namespace TemplateMatching;
 
@@ -47,6 +50,81 @@ int TM_LearnPatternFromData(TM_MatcherHandle handle, const unsigned char* data,
     }
     
     return matcher->LearnPattern(img) ? 1 : 0;
+}
+
+int TM_WritePatternToFile(TM_MatcherHandle handle, const char* filepath, TM_Format format){
+    if (!handle || !filepath)
+        return 0;
+    TemplateMatcher* matcher = static_cast<TemplateMatcher*>(handle);
+    const TemplData& data = matcher->GetTemplateData();
+    std::filesystem::path path = std::filesystem::u8path(filepath);
+    auto mode = (format == TM_FMT_BINARY || format == TM_FMT_BINARY_PORTABLE) ? std::ios::binary : std::ios::out;
+    std::ofstream os(path, mode);
+    if (!os.is_open())
+        return 0;
+    
+    return SaveToStreamByFormat(os, data, format) ? 1 : 0;
+}
+
+int TM_ReadPatternFromFile(TM_MatcherHandle handle, const char* filepath, TM_Format format) {
+    if (!handle || !filepath)
+        return 0;
+    TemplateMatcher* matcher = static_cast<TemplateMatcher*>(handle);
+    std::filesystem::path path = std::filesystem::u8path(filepath);
+    auto mode = (format == TM_FMT_BINARY || format == TM_FMT_BINARY_PORTABLE) ? std::ios::binary : std::ios::in;
+    std::ifstream is(path, mode);
+    if (!is.is_open())
+        return 0;
+    TemplData data;
+    if (!LoadFromStreamByFormat(is, data, format))
+        return 0;
+    matcher->ClearTemplateData();
+    matcher->SetTemplateData(data);
+    return 1;
+}
+
+int TM_WritePatternToData(TM_MatcherHandle handle, unsigned char* data,
+    int dataSize, int* writeSize, TM_Format format) {
+    if (!handle)
+        return 0;
+    TemplateMatcher* matcher = static_cast<TemplateMatcher*>(handle);
+    const TemplData& templData = matcher->GetTemplateData();
+
+    if (data == nullptr) {
+        SizeCountingBuffer countBuffer;
+        std::ostream os(&countBuffer);
+        if (!SaveToStreamByFormat(os, templData, format))
+            return 0;
+        if (writeSize)
+            *writeSize = static_cast<int>(countBuffer.size);
+        return 1;
+    }
+
+    MemoryWriteBuffer writeBuffer(data, dataSize);
+    std::ostream os(&writeBuffer);
+    if (!SaveToStreamByFormat(os, templData, format))
+        return 0;
+    if (os.bad())
+        return 0;
+    if (writeSize)
+        *writeSize = static_cast<int>(writeBuffer.written_size());
+    return 1;
+}
+
+int TM_ReadPatternFromData(TM_MatcherHandle handle, const unsigned char* data,
+    int size, TM_Format format) {
+    if (!handle || !data || size <= 0)
+        return 0;
+    TemplateMatcher* matcher = static_cast<TemplateMatcher*>(handle);
+
+    MemoryReadBuffer readBuffer(data, size);
+    std::istream is(&readBuffer);
+    TemplData templData;
+    if (!LoadFromStreamByFormat(is, templData, format))
+        return 0;
+    matcher->ClearTemplateData();
+    matcher->SetTemplateData(templData);
+    return 1;
 }
 
 int TM_MatchFromFile(TM_MatcherHandle handle, const char* sourceFile, 

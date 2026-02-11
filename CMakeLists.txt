@@ -197,6 +197,7 @@ set(HEADERS
     include/TemplateMatcher.h
     include/TemplateMatcherC.h
     include/simd_utils.h
+    include/CerealSerialization.hpp
 )
 
 # 创建共享库
@@ -218,6 +219,7 @@ endif()
 
 # 设置编译选项
 if(MSVC)
+    add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
     target_compile_options(TemplateMatcher PRIVATE /W4)
     # 启用SSE2
     target_compile_options(TemplateMatcher PRIVATE /arch:SSE2)

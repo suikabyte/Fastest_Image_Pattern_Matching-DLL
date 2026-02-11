@@ -141,6 +141,9 @@ public:
     // 设置模板数据（用于加载）
     void SetTemplateData(const TemplData& data) { m_TemplData = data; }
 
+    // 清空模板数据（用于加载时释放旧的）
+    void ClearTemplateData() { m_TemplData.clear(); }
+
     // 检查是否已学习模板
     bool IsPatternLearned() const { return m_TemplData.bIsPatternLearned; }
 
